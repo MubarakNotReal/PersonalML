@@ -47,7 +47,8 @@ class DepthManager {
 
   handleEvent(symbol, data) {
     const now = Date.now();
-    const eventTime = safeNum(data?.E) ?? now;
+    const eventTime = safeNum((data || {}).E);
+    const eventTimeSafe = Number.isFinite(eventTime) ? eventTime : now;
     const book = this.ensure(symbol);
     const event = {
       U: safeNum(data.U),
@@ -55,9 +56,9 @@ class DepthManager {
       pu: safeNum(data.pu),
       bids: (data.b || []).map(([p, q]) => [safeNum(p), safeNum(q)]),
       asks: (data.a || []).map(([p, q]) => [safeNum(p), safeNum(q)]),
-      time: eventTime
+      time: eventTimeSafe
     };
-    book.lastEventTime = eventTime;
+    book.lastEventTime = eventTimeSafe;
 
     if (!Number.isFinite(event.U) || !Number.isFinite(event.u)) {
       this.bufferEvent(book, event);

@@ -11,9 +11,10 @@ function calcTrend(series, now, windowMs) {
     }
   }
   if (startPrice === null) {
-    startPrice = series[0]?.p;
+    startPrice = series[0] ? series[0].p : undefined;
   }
-  const endPrice = series[series.length - 1]?.p;
+  const last = series[series.length - 1];
+  const endPrice = last ? last.p : undefined;
   if (!Number.isFinite(startPrice) || !Number.isFinite(endPrice) || startPrice <= 0) {
     return null;
   }
@@ -180,4 +181,3 @@ module.exports = {
   COMPLETENESS_KEYS,
   MICRO_COMPLETENESS_KEYS
 };
-

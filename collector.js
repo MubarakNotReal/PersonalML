@@ -36,7 +36,10 @@ const {
 const WS_BASE = process.env.FUTURES_WS_URL || 'wss://fstream.binance.com';
 const REST_BASE = process.env.FUTURES_REST_URL || 'https://fapi.binance.com';
 
-const SYMBOLS_FILE = process.env.SYMBOLS_FILE ?? '../new_symbols_10pct.txt';
+const SYMBOLS_FILE =
+  process.env.SYMBOLS_FILE !== undefined && process.env.SYMBOLS_FILE !== null
+    ? process.env.SYMBOLS_FILE
+    : '../new_symbols_10pct.txt';
 const TOP_N = Number(process.env.TOP_N || 0);
 const USE_ALL_SYMBOLS = String(process.env.USE_ALL_SYMBOLS || 'false') === 'true';
 const SYMBOL_REFRESH_MS = Number(process.env.SYMBOL_REFRESH_MS || 5 * 60 * 1000);
@@ -512,7 +515,8 @@ function handleAggTrade(data) {
   if (!symbol) {
     return;
   }
-  const eventTime = safeNum(data.T) ?? resolveEventTime(data);
+  const eventTime = safeNum(data.T);
+  const eventTimeSafe = Number.isFinite(eventTime) ? eventTime : resolveEventTime(data);
   const price = safeNum(data.p);
   const qty = safeNum(data.q);
   const isBuyerMaker = data.m === true;
@@ -520,9 +524,9 @@ function handleAggTrade(data) {
   if (!Number.isFinite(qty) || qty <= 0) {
     return;
   }
-  flowManager.add(symbol, price, qty, side, eventTime);
+  flowManager.add(symbol, price, qty, side, eventTimeSafe);
   if (Number.isFinite(price)) {
-    pushPrice(symbol, price, eventTime);
+    pushPrice(symbol, price, eventTimeSafe);
   }
 }
 
@@ -532,14 +536,15 @@ function handleForceOrder(data) {
   if (!symbol) {
     return;
   }
-  const eventTime = safeNum(order.T) ?? resolveEventTime(data);
+  const eventTime = safeNum(order.T);
+  const eventTimeSafe = Number.isFinite(eventTime) ? eventTime : resolveEventTime(data);
   const side = order.S || order.side;
   const qty = safeNum(order.q || order.l || order.Q);
   const price = safeNum(order.p || order.ap || order.P);
   if (!Number.isFinite(qty) || qty <= 0) {
     return;
   }
-  liqManager.add(symbol, price, qty, side === 'BUY' ? 'BUY' : 'SELL', eventTime);
+  liqManager.add(symbol, price, qty, side === 'BUY' ? 'BUY' : 'SELL', eventTimeSafe);
 }
 
 function handleMarkPrice(data) {
@@ -570,7 +575,8 @@ function handleKline(data) {
   }
   const symbol = k.s;
   const interval = k.i;
-  const eventTime = safeNum(k.T) ?? resolveEventTime(data);
+  const eventTime = safeNum(k.T);
+  const eventTimeSafe = Number.isFinite(eventTime) ? eventTime : resolveEventTime(data);
   const payload = {
     open: safeNum(k.o),
     high: safeNum(k.h),
@@ -581,7 +587,7 @@ function handleKline(data) {
     start: safeNum(k.t),
     end: safeNum(k.T),
     isFinal: k.x === true,
-    time: eventTime,
+    time: eventTimeSafe,
     recvTime: Date.now()
   };
   if (interval === '1m') {
@@ -775,25 +781,30 @@ function buildSnapshot(symbol, now, contextFeatures) {
   };
 
   const featureBase = {
-    markPrice: mark.markPrice ?? null,
-    indexPrice: mark.indexPrice ?? null,
-    fundingRate: mark.fundingRate ?? null,
-    nextFundingTime: mark.nextFundingTime ?? null,
-    openInterest: oi.openInterest ?? null,
+    markPrice: mark.markPrice !== undefined && mark.markPrice !== null ? mark.markPrice : null,
+    indexPrice: mark.indexPrice !== undefined && mark.indexPrice !== null ? mark.indexPrice : null,
+    fundingRate: mark.fundingRate !== undefined && mark.fundingRate !== null ? mark.fundingRate : null,
+    nextFundingTime:
+      mark.nextFundingTime !== undefined && mark.nextFundingTime !== null ? mark.nextFundingTime : null,
+    openInterest: oi.openInterest !== undefined && oi.openInterest !== null ? oi.openInterest : null,
     price,
-    bestBid: book.bid ?? null,
-    bestAsk: book.ask ?? null,
+    bestBid: book.bid !== undefined && book.bid !== null ? book.bid : null,
+    bestAsk: book.ask !== undefined && book.ask !== null ? book.ask : null,
     spreadPct: spread,
     imbalance,
     depthBidQty: depthStats.bidQty,
     depthAskQty: depthStats.askQty,
     depthImbalance: depthStats.imbalance,
     basisPct: basis,
-    changePct24h: stats.priceChangePercent ?? null,
-    high24h: stats.highPrice ?? null,
-    low24h: stats.lowPrice ?? null,
-    volume24h: stats.volume ?? null,
-    quoteVolume24h: stats.quoteVolume ?? null,
+    changePct24h:
+      stats.priceChangePercent !== undefined && stats.priceChangePercent !== null
+        ? stats.priceChangePercent
+        : null,
+    high24h: stats.highPrice !== undefined && stats.highPrice !== null ? stats.highPrice : null,
+    low24h: stats.lowPrice !== undefined && stats.lowPrice !== null ? stats.lowPrice : null,
+    volume24h: stats.volume !== undefined && stats.volume !== null ? stats.volume : null,
+    quoteVolume24h:
+      stats.quoteVolume !== undefined && stats.quoteVolume !== null ? stats.quoteVolume : null,
     aggBuyQty: flowDefault.buyQty,
     aggSellQty: flowDefault.sellQty,
     aggBuyCount: flowDefault.buyCount,
@@ -810,10 +821,10 @@ function buildSnapshot(symbol, now, contextFeatures) {
     liqBuySellRatio: liqDefault.buySellRatio,
     liqNetQty: liqDefault.netQty,
     liqNetNotional: liqDefault.netNotional,
-    kline1mClose: k1.close ?? null,
-    kline1mVol: k1.volume ?? null,
-    kline5mClose: k5.close ?? null,
-    kline5mVol: k5.volume ?? null,
+    kline1mClose: k1.close !== undefined && k1.close !== null ? k1.close : null,
+    kline1mVol: k1.volume !== undefined && k1.volume !== null ? k1.volume : null,
+    kline5mClose: k5.close !== undefined && k5.close !== null ? k5.close : null,
+    kline5mVol: k5.volume !== undefined && k5.volume !== null ? k5.volume : null,
     trend5m,
     trend15m,
     vol5m,
@@ -889,7 +900,8 @@ function countStale(map, now, thresholdMs) {
 
 
 function resolveEventTime(payload) {
-  const eventTime = safeNum(payload?.E ?? payload?.T ?? payload?.time);
+  const source = payload || {};
+  const eventTime = safeNum(source.E || source.T || source.time);
   return Number.isFinite(eventTime) ? eventTime : Date.now();
 }
 

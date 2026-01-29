@@ -17,7 +17,11 @@ const API_KEY = process.env.BINANCE_API_KEY || process.env.API_KEY || '';
 const HEADERS = API_KEY ? { 'X-MBX-APIKEY': API_KEY } : {};
 
 const BACKFILL_SYMBOLS_FILE =
-  process.env.BACKFILL_SYMBOLS_FILE ?? process.env.SYMBOLS_FILE ?? '../new_symbols_10pct.txt';
+  process.env.BACKFILL_SYMBOLS_FILE !== undefined && process.env.BACKFILL_SYMBOLS_FILE !== null
+    ? process.env.BACKFILL_SYMBOLS_FILE
+    : process.env.SYMBOLS_FILE !== undefined && process.env.SYMBOLS_FILE !== null
+      ? process.env.SYMBOLS_FILE
+      : '../new_symbols_10pct.txt';
 const BACKFILL_TOP_N = Number(process.env.BACKFILL_TOP_N || process.env.TOP_N || 80);
 const BACKFILL_USE_ALL_SYMBOLS =
   String(process.env.BACKFILL_USE_ALL_SYMBOLS || process.env.USE_ALL_SYMBOLS || 'false') === 'true';
@@ -371,9 +375,10 @@ function calcTrend(series, now, windowMs) {
     }
   }
   if (startPrice === null) {
-    startPrice = series[0]?.p;
+    startPrice = series[0] ? series[0].p : undefined;
   }
-  const endPrice = series[series.length - 1]?.p;
+  const last = series[series.length - 1];
+  const endPrice = last ? last.p : undefined;
   if (!Number.isFinite(startPrice) || !Number.isFinite(endPrice) || startPrice <= 0) {
     return null;
   }
@@ -527,7 +532,10 @@ async function fetchOpenInterestHist(symbol, startTime, endTime, period) {
     for (const row of response) {
       out.push({
         time: safeNum(row.timestamp),
-        openInterest: safeNum(row.sumOpenInterest ?? row.openInterest)
+        openInterest:
+          safeNum(row.sumOpenInterest) !== null
+            ? safeNum(row.sumOpenInterest)
+            : safeNum(row.openInterest)
       });
     }
     const last = response[response.length - 1];
