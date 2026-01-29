@@ -1,0 +1,9 @@
+node_modules/
+data/
+data_backfill/
+returns*.jsonl
+*.parquet
+*.joblib
+model_meta.json
+model_meta_*.json
+.env

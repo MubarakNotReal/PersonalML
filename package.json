@@ -1,0 +1,26 @@
+{
+  "name": "ultimate_ml",
+  "version": "1.0.0",
+  "description": "This folder is a **fresh, ideal data collection stack** for Binance USDT‑M Futures. It captures rich microstructure + futures‑specific signals and writes **snapshot‑ready ML data**.",
+  "main": "backfill.js",
+  "scripts": {
+    "collector": "node collector.js",
+    "backfill": "node backfill.js",
+    "freeze-symbols": "node freeze_symbols.js",
+    "label": "python labeler.py",
+    "label-barrier": "python labeler_barrier.py",
+    "dataset": "python build_dataset.py",
+    "dataset-barrier": "python build_barrier_dataset.py",
+    "train": "python train.py",
+    "train-barrier": "python train_barrier.py",
+    "backtest": "python backtest.py"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "node-fetch": "^2.7.0",
+    "ws": "^8.19.0"
+  }
+}
