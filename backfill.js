@@ -66,6 +66,8 @@ const state = {
   markIndexSupported: BACKFILL_MARK_INDEX
 };
 
+let shuttingDown = false;
+
 async function main() {
   const symbols = await resolveSymbols();
   if (!symbols.length) {
@@ -93,9 +95,13 @@ async function main() {
   });
 
   console.log('Backfill complete.');
+  await writer.close();
 }
 
 async function backfillSymbol(symbol, startTime, endTime) {
+  if (shuttingDown) {
+    return;
+  }
   console.log(`[${symbol}] fetching klines...`);
   const kline1m = await fetchKlines(symbol, '1m', startTime, endTime, '/fapi/v1/klines');
   if (!kline1m.length) {
@@ -143,6 +149,9 @@ async function backfillSymbol(symbol, startTime, endTime) {
   let prevSnapshot = null;
 
   for (const row of kline1m) {
+    if (shuttingDown) {
+      break;
+    }
     const time = row.closeTime;
     const price = row.close;
     if (!Number.isFinite(time) || !Number.isFinite(price)) {
@@ -315,6 +324,9 @@ function calcChangePct24h(priceWindow, currentPrice) {
 }
 
 function writeSnapshot(payload) {
+  if (shuttingDown) {
+    return;
+  }
   const time = payload.time || Date.now();
   writer.write('snapshots', payload, time);
 }
@@ -466,6 +478,9 @@ async function fetchKlines(symbol, interval, startTime, endTime, endpoint, toler
   const out = [];
   let cursor = startTime;
   while (cursor < endTime) {
+    if (shuttingDown) {
+      break;
+    }
     const url = `${REST_BASE}${endpoint}?symbol=${symbol}&interval=${interval}&startTime=${cursor}&endTime=${endTime}&limit=${limit}`;
     const response = await fetchJson(url);
     if (!Array.isArray(response) || response.length === 0) {
@@ -496,6 +511,9 @@ async function fetchFundingHistory(symbol, startTime, endTime) {
   const out = [];
   let cursor = startTime;
   while (cursor < endTime) {
+    if (shuttingDown) {
+      break;
+    }
     const url = `${REST_BASE}/fapi/v1/fundingRate?symbol=${symbol}&startTime=${cursor}&endTime=${endTime}&limit=${limit}`;
     const response = await fetchJson(url);
     if (!Array.isArray(response) || response.length === 0) {
@@ -524,6 +542,9 @@ async function fetchOpenInterestHist(symbol, startTime, endTime, period) {
   const out = [];
   let cursor = startTime;
   while (cursor < endTime) {
+    if (shuttingDown) {
+      break;
+    }
     const url = `${REST_BASE}/fapi/v1/openInterestHist?symbol=${symbol}&period=${period}&startTime=${cursor}&endTime=${endTime}&limit=${limit}`;
     const response = await fetchJson(url);
     if (!Array.isArray(response) || response.length === 0) {
@@ -552,6 +573,9 @@ async function fetchOpenInterestHist(symbol, startTime, endTime, period) {
 async function fetchJson(url) {
   const maxAttempts = 5;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+    if (shuttingDown) {
+      return { __error: true, status: 0, text: 'shutdown' };
+    }
     try {
       const response = await fetch(url, { headers: HEADERS });
       if (response.status === 418 || response.status === 429) {
@@ -664,7 +688,7 @@ async function runPool(items, concurrency, worker) {
   const queue = items.slice();
   const workers = Array.from({ length: Math.min(concurrency, queue.length) }, () =>
     (async () => {
-      while (queue.length) {
+      while (queue.length && !shuttingDown) {
         const item = queue.shift();
         if (!item) {
           return;
@@ -675,6 +699,23 @@ async function runPool(items, concurrency, worker) {
   );
   await Promise.all(workers);
 }
+
+async function requestShutdown(signal) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`Backfill shutting down (${signal})...`);
+  try {
+    await writer.close();
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', () => requestShutdown('SIGINT'));
+process.on('SIGTERM', () => requestShutdown('SIGTERM'));
 
 main().catch((error) => {
   console.error(`Backfill failed: ${error.message}`);
