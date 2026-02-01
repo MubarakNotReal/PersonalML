@@ -11,7 +11,7 @@ LINES_PER_FILE = 800
 MAX_FUTURE_SKEW_SEC = 5
 MAX_STALE_SEC = 120
 
-EVENT_TYPES = ["aggTrade", "bookTicker", "depthUpdate", "markPriceUpdate"]
+DEFAULT_EVENT_TYPES = ["aggTrade", "bookTicker", "depthUpdate", "markPriceUpdate"]
 REQUIRED_SNAPSHOT_FIELDS = ["symbol", "time", "price", "features"]
 CORE_FEATURES = [
     "markPrice",
@@ -59,6 +59,51 @@ def parse_jsonl_lines(lines: Iterable[str]) -> List[dict]:
         except Exception:
             continue
     return out
+
+
+def parse_env(path: str) -> dict:
+    values = {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw in handle:
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, value = line.split("=", 1)
+                values[key.strip()] = value.strip()
+    except Exception:
+        return values
+    return values
+
+
+def env_flag(values: dict, key: str, default: bool = False) -> bool:
+    if key not in values:
+        return default
+    return str(values.get(key, "")).lower() == "true"
+
+
+def resolve_event_types() -> List[str]:
+    env_path = ".env" if os.path.exists(".env") else ".env.example"
+    env = parse_env(env_path)
+    if not env_flag(env, "LOG_RAW_EVENTS", True):
+        return []
+
+    allowed = set(
+        [item.strip() for item in env.get("LOG_RAW_EVENTS_TYPES", "").split(",") if item.strip()]
+    )
+    if not allowed:
+        allowed = set(DEFAULT_EVENT_TYPES)
+
+    enabled = set()
+    if env_flag(env, "ENABLE_AGG_TRADES", True) and "aggTrade" in allowed:
+        enabled.add("aggTrade")
+    if env_flag(env, "ENABLE_BOOK_TICKER", True) and "bookTicker" in allowed:
+        enabled.add("bookTicker")
+    if env_flag(env, "ENABLE_DEPTH", True) and "depthUpdate" in allowed:
+        enabled.add("depthUpdate")
+    if env_flag(env, "ENABLE_MARK_PRICE", True) and "markPriceUpdate" in allowed:
+        enabled.add("markPriceUpdate")
+    return sorted(enabled)
 
 def format_ts(ms: Optional[int]) -> str:
     if not ms:
@@ -150,7 +195,8 @@ def main() -> None:
     check_snapshots(snapshot_rows, now_ms)
 
     event_map = {}
-    for ev_type in EVENT_TYPES:
+    event_types = resolve_event_types()
+    for ev_type in event_types:
         rows, _ = load_recent(f"events_{ev_type}_*.jsonl")
         event_map[ev_type] = rows
         check_events(ev_type, rows, now_ms)

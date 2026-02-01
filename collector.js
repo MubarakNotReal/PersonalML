@@ -340,7 +340,7 @@ function buildStreams(rebuild = false) {
 
   if (ENABLE_BOOK_TICKER) {
     if (BOOK_TICKER_ALL_STREAM) {
-      streams.push('!bookTicker@arr');
+      streams.push('!bookTicker');
     } else {
       streams.push(...symbolsLower.map((sym) => `${sym}@bookTicker`));
     }
