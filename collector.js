@@ -145,7 +145,10 @@ const state = {
     lastLogCount: 0,
     depthEvents: 0,
     lastDepthLog: Date.now(),
-    lastDepthCount: 0
+    lastDepthCount: 0,
+    bookEvents: 0,
+    lastBookLog: Date.now(),
+    lastBookCount: 0
   }
 };
 
@@ -541,6 +544,7 @@ function handleBookTicker(data) {
   if (!symbol) {
     return;
   }
+  state.metrics.bookEvents += 1;
   const eventTime = resolveEventTime(data);
   const recvTime = Date.now();
   if (LOG_RAW_EVENTS) {
@@ -960,16 +964,22 @@ function logMetrics() {
   const depthDelta = state.metrics.depthEvents - state.metrics.lastDepthCount;
   const depthPerSec = (depthDelta / depthElapsedMs) * 1000;
 
+  const bookElapsedMs = Math.max(1, now - state.metrics.lastBookLog);
+  const bookDelta = state.metrics.bookEvents - state.metrics.lastBookCount;
+  const bookPerSec = (bookDelta / bookElapsedMs) * 1000;
+
   console.log(
     `Metrics | snaps/sec=${snapshotsPerSec.toFixed(2)} | depthEvents/sec=${depthPerSec.toFixed(
       2
-    )} | stale(book/mark/depth/stats)=${staleBook}/${staleMark}/${staleDepth}/${staleStats}`
+    )} | bookEvents/sec=${bookPerSec.toFixed(2)} | stale(book/mark/depth/stats)=${staleBook}/${staleMark}/${staleDepth}/${staleStats}`
   );
 
   state.metrics.lastLogTime = now;
   state.metrics.lastLogCount = state.metrics.snapshotsWritten;
   state.metrics.lastDepthLog = now;
   state.metrics.lastDepthCount = state.metrics.depthEvents;
+  state.metrics.lastBookLog = now;
+  state.metrics.lastBookCount = state.metrics.bookEvents;
 }
 
 function countStale(map, now, thresholdMs) {
