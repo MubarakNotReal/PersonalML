@@ -5,6 +5,9 @@
   "main": "backfill.js",
   "scripts": {
     "collector": "node collector.js",
+    "collector-depth": "node collector_depth.js",
+    "collector-book": "node collector_book.js",
+    "collector-flow": "node collector_flow.js",
     "backfill": "node backfill.js",
     "freeze-symbols": "node freeze_symbols.js",
     "label": "python labeler.py",

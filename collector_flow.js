@@ -1,0 +1,10 @@
+process.env.MODE = 'custom';
+process.env.ENABLE_DEPTH = 'false';
+process.env.ENABLE_BOOK_TICKER = 'false';
+process.env.ENABLE_AGG_TRADES = 'true';
+process.env.ENABLE_FORCE_ORDERS = process.env.ENABLE_FORCE_ORDERS || 'false';
+process.env.ENABLE_MARK_PRICE = 'true';
+process.env.ENABLE_TICKER_STREAM = 'false';
+process.env.ENABLE_KLINE_1M = 'true';
+process.env.ENABLE_KLINE_5M = 'false';
+require('./collector');

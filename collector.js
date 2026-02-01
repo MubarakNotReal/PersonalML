@@ -47,24 +47,42 @@ const FREEZE_SYMBOLS = String(process.env.FREEZE_SYMBOLS || 'false') === 'true';
 
 const SNAPSHOT_INTERVAL_MS = Number(process.env.SNAPSHOT_INTERVAL_MS || 1000);
 
-const ENABLE_BOOK_TICKER = String(process.env.ENABLE_BOOK_TICKER || 'true') === 'true';
-const ENABLE_DEPTH = String(process.env.ENABLE_DEPTH || 'true') === 'true';
+const MODE = String(process.env.MODE || 'all').toLowerCase();
+let ENABLE_BOOK_TICKER = String(process.env.ENABLE_BOOK_TICKER || 'true') === 'true';
+const BOOK_TICKER_ALL_STREAM = String(process.env.BOOK_TICKER_ALL_STREAM || 'false') === 'true';
+let ENABLE_DEPTH = String(process.env.ENABLE_DEPTH || 'true') === 'true';
 const DEPTH_LEVEL = Number(process.env.DEPTH_LEVEL || 5);
 const DEPTH_SPEED = process.env.DEPTH_SPEED || '1000ms';
+const DEPTH_STREAM_MODE = String(process.env.DEPTH_STREAM_MODE || 'diff').toLowerCase();
 const DEPTH_SNAPSHOT_LIMIT = Number(process.env.DEPTH_SNAPSHOT_LIMIT || 100);
 const DEPTH_BUFFER_LIMIT = Number(process.env.DEPTH_BUFFER_LIMIT || 2000);
 const DEPTH_SNAPSHOT_CONCURRENCY = Number(process.env.DEPTH_SNAPSHOT_CONCURRENCY || 4);
 const DEPTH_RESYNC_COOLDOWN_MS = Number(process.env.DEPTH_RESYNC_COOLDOWN_MS || 10000);
 const DEPTH_SNAPSHOT_SLEEP_MS = Number(process.env.DEPTH_SNAPSHOT_SLEEP_MS || 50);
 
-const ENABLE_AGG_TRADES = String(process.env.ENABLE_AGG_TRADES || 'true') === 'true';
-const ENABLE_FORCE_ORDERS = String(process.env.ENABLE_FORCE_ORDERS || 'true') === 'true';
+let ENABLE_AGG_TRADES = String(process.env.ENABLE_AGG_TRADES || 'true') === 'true';
+let ENABLE_FORCE_ORDERS = String(process.env.ENABLE_FORCE_ORDERS || 'true') === 'true';
 const FORCE_ORDER_ALL_STREAM = String(process.env.FORCE_ORDER_ALL_STREAM || 'true') === 'true';
-const ENABLE_MARK_PRICE = String(process.env.ENABLE_MARK_PRICE || 'true') === 'true';
+let ENABLE_MARK_PRICE = String(process.env.ENABLE_MARK_PRICE || 'true') === 'true';
 const MARK_PRICE_SPEED = process.env.MARK_PRICE_SPEED || '1s';
-const ENABLE_TICKER_STREAM = String(process.env.ENABLE_TICKER_STREAM || 'true') === 'true';
-const ENABLE_KLINE_1M = String(process.env.ENABLE_KLINE_1M || 'true') === 'true';
-const ENABLE_KLINE_5M = String(process.env.ENABLE_KLINE_5M || 'true') === 'true';
+let ENABLE_TICKER_STREAM = String(process.env.ENABLE_TICKER_STREAM || 'true') === 'true';
+let ENABLE_KLINE_1M = String(process.env.ENABLE_KLINE_1M || 'true') === 'true';
+let ENABLE_KLINE_5M = String(process.env.ENABLE_KLINE_5M || 'true') === 'true';
+
+if (MODE === 'depth') {
+  ENABLE_DEPTH = true;
+  ENABLE_BOOK_TICKER = false;
+  ENABLE_AGG_TRADES = false;
+  ENABLE_FORCE_ORDERS = false;
+  ENABLE_MARK_PRICE = false;
+  ENABLE_TICKER_STREAM = false;
+  ENABLE_KLINE_1M = false;
+  ENABLE_KLINE_5M = false;
+}
+
+if (MODE === 'flow') {
+  ENABLE_DEPTH = false;
+}
 
 const OPEN_INTEREST_POLL_MS = Number(process.env.OPEN_INTEREST_POLL_MS || 30 * 1000);
 const FUNDING_POLL_MS = Number(process.env.FUNDING_POLL_MS || 30 * 1000);
@@ -123,9 +141,15 @@ const state = {
   metrics: {
     snapshotsWritten: 0,
     lastLogTime: Date.now(),
-    lastLogCount: 0
+    lastLogCount: 0,
+    depthEvents: 0,
+    lastDepthLog: Date.now(),
+    lastDepthCount: 0
   }
 };
+
+const intervals = [];
+let shuttingDown = false;
 
 const writers = createBufferedWriter(DATA_DIR, {
   flushIntervalMs: WRITER_FLUSH_INTERVAL_MS,
@@ -142,6 +166,7 @@ const depthManager = new DepthManager({
   snapshotConcurrency: DEPTH_SNAPSHOT_CONCURRENCY,
   resyncCooldownMs: DEPTH_RESYNC_COOLDOWN_MS,
   snapshotSleepMs: DEPTH_SNAPSHOT_SLEEP_MS,
+  streamMode: DEPTH_STREAM_MODE,
   log: console
 });
 
@@ -168,16 +193,16 @@ async function init() {
     }, 1500);
   }
 
-  setInterval(snapshotTick, SNAPSHOT_INTERVAL_MS);
+  intervals.push(setInterval(snapshotTick, SNAPSHOT_INTERVAL_MS));
   if (!FREEZE_SYMBOLS && SYMBOL_REFRESH_MS > 0) {
-    setInterval(refreshSymbolsIfNeeded, SYMBOL_REFRESH_MS);
+    intervals.push(setInterval(refreshSymbolsIfNeeded, SYMBOL_REFRESH_MS));
   } else {
     console.log('Symbol refresh disabled (FREEZE_SYMBOLS=true or SYMBOL_REFRESH_MS<=0).');
   }
-  setInterval(refreshOpenInterest, OPEN_INTEREST_POLL_MS);
-  setInterval(refreshFunding, FUNDING_POLL_MS);
-  setInterval(refresh24hStats, STATS24H_POLL_MS);
-  setInterval(logMetrics, METRICS_LOG_MS);
+  intervals.push(setInterval(refreshOpenInterest, OPEN_INTEREST_POLL_MS));
+  intervals.push(setInterval(refreshFunding, FUNDING_POLL_MS));
+  intervals.push(setInterval(refresh24hStats, STATS24H_POLL_MS));
+  intervals.push(setInterval(logMetrics, METRICS_LOG_MS));
 }
 
 async function resolveSymbols() {
@@ -309,10 +334,18 @@ function buildStreams(rebuild = false) {
   const symbolsLower = state.symbols.map((sym) => sym.toLowerCase());
 
   if (ENABLE_BOOK_TICKER) {
-    streams.push(...symbolsLower.map((sym) => `${sym}@bookTicker`));
+    if (BOOK_TICKER_ALL_STREAM) {
+      streams.push('!bookTicker@arr');
+    } else {
+      streams.push(...symbolsLower.map((sym) => `${sym}@bookTicker`));
+    }
   }
   if (ENABLE_DEPTH) {
-    streams.push(...symbolsLower.map((sym) => `${sym}@depth${DEPTH_LEVEL}@${DEPTH_SPEED}`));
+    const depthStream =
+      DEPTH_STREAM_MODE === 'partial'
+        ? (sym) => `${sym}@depth${DEPTH_LEVEL}@${DEPTH_SPEED}`
+        : (sym) => `${sym}@depth@${DEPTH_SPEED}`;
+    streams.push(...symbolsLower.map(depthStream));
   }
   if (ENABLE_AGG_TRADES) {
     streams.push(...symbolsLower.map((sym) => `${sym}@aggTrade`));
@@ -348,6 +381,7 @@ class StreamManager {
     this.onMessage = onMessage;
     this.maxPerConn = maxPerConn;
     this.sockets = [];
+    this.closed = false;
   }
 
   connectAll() {
@@ -371,16 +405,23 @@ class StreamManager {
       }
     });
     ws.on('close', () => {
+      if (this.closed || shuttingDown) {
+        return;
+      }
       console.warn('WS closed, reconnecting...');
       setTimeout(() => this.openConnection(streams), 1500);
     });
     ws.on('error', () => {
+      if (this.closed || shuttingDown) {
+        return;
+      }
       ws.close();
     });
     this.sockets.push(ws);
   }
 
   closeAll() {
+    this.closed = true;
     this.sockets.forEach((ws) => {
       try {
         ws.close();
@@ -486,6 +527,13 @@ function handleBookTicker(data) {
   }
   const eventTime = resolveEventTime(data);
   const recvTime = Date.now();
+  if (LOG_RAW_EVENTS) {
+    writers.write(
+      'events_bookTicker',
+      { type: 'bookTicker', time: eventTime, recvTime, data },
+      eventTime
+    );
+  }
   const bid = safeNum(data.b);
   const ask = safeNum(data.a);
   state.book.set(symbol, {
@@ -506,6 +554,16 @@ function handleDepth(data) {
   const symbol = data.s;
   if (!symbol) {
     return;
+  }
+  state.metrics.depthEvents += 1;
+  if (LOG_RAW_EVENTS) {
+    const eventTime = resolveEventTime(data);
+    const recvTime = Date.now();
+    writers.write(
+      'events_depthUpdate',
+      { type: 'depthUpdate', time: eventTime, recvTime, data },
+      eventTime
+    );
   }
   depthManager.handleEvent(symbol, data);
 }
@@ -879,12 +937,20 @@ function logMetrics() {
   const staleStats = countStale(state.stats24h, now, STALE_THRESHOLD_MS * 4);
   const staleDepth = depthManager.countStale(state.symbols, now, STALE_THRESHOLD_MS * 2);
 
+  const depthElapsedMs = Math.max(1, now - state.metrics.lastDepthLog);
+  const depthDelta = state.metrics.depthEvents - state.metrics.lastDepthCount;
+  const depthPerSec = (depthDelta / depthElapsedMs) * 1000;
+
   console.log(
-    `Metrics | snaps/sec=${snapshotsPerSec.toFixed(2)} | stale(book/mark/depth/stats)=${staleBook}/${staleMark}/${staleDepth}/${staleStats}`
+    `Metrics | snaps/sec=${snapshotsPerSec.toFixed(2)} | depthEvents/sec=${depthPerSec.toFixed(
+      2
+    )} | stale(book/mark/depth/stats)=${staleBook}/${staleMark}/${staleDepth}/${staleStats}`
   );
 
   state.metrics.lastLogTime = now;
   state.metrics.lastLogCount = state.metrics.snapshotsWritten;
+  state.metrics.lastDepthLog = now;
+  state.metrics.lastDepthCount = state.metrics.depthEvents;
 }
 
 function countStale(map, now, thresholdMs) {
@@ -904,6 +970,27 @@ function resolveEventTime(payload) {
   const eventTime = safeNum(source.E || source.T || source.time);
   return Number.isFinite(eventTime) ? eventTime : Date.now();
 }
+
+function shutdown(reason) {
+  if (shuttingDown) {
+    return;
+  }
+  shuttingDown = true;
+  console.log(`Shutting down collector (${reason})...`);
+  intervals.forEach((timer) => clearInterval(timer));
+  if (state._streamManager) {
+    state._streamManager.closeAll();
+  }
+  try {
+    writers.close();
+  } catch {
+    // ignore
+  }
+  process.exit(0);
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 init().catch((error) => {
   console.error(`Collector failed: ${error.message}`);

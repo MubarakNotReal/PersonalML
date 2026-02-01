@@ -11,6 +11,7 @@ class DepthManager {
     this.resyncCooldownMs = options.resyncCooldownMs;
     this.snapshotSleepMs = options.snapshotSleepMs;
     this.log = options.log || console;
+    this.streamMode = (options.streamMode || 'diff').toLowerCase();
 
     this.books = new Map();
     this.resyncing = new Set();
@@ -54,11 +55,24 @@ class DepthManager {
       U: safeNum(data.U),
       u: safeNum(data.u),
       pu: safeNum(data.pu),
+      lastUpdateId: safeNum(data.lastUpdateId),
       bids: (data.b || []).map(([p, q]) => [safeNum(p), safeNum(q)]),
       asks: (data.a || []).map(([p, q]) => [safeNum(p), safeNum(q)]),
       time: eventTimeSafe
     };
     book.lastEventTime = eventTimeSafe;
+
+    if (this.streamMode === 'partial') {
+      book.bids = new Map();
+      book.asks = new Map();
+      applySideSnapshot(book.bids, event.bids);
+      applySideSnapshot(book.asks, event.asks);
+      if (Number.isFinite(event.lastUpdateId)) {
+        book.lastUpdateId = event.lastUpdateId;
+      }
+      book.ready = true;
+      return;
+    }
 
     if (!Number.isFinite(event.U) || !Number.isFinite(event.u)) {
       this.bufferEvent(book, event);
