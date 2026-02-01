@@ -2,7 +2,7 @@ import glob
 import json
 import os
 from collections import Counter, defaultdict
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Iterable, List, Optional, Tuple
 
 DATA_DIR = "data"
@@ -108,7 +108,7 @@ def resolve_event_types() -> List[str]:
 def format_ts(ms: Optional[int]) -> str:
     if not ms:
         return "n/a"
-    return datetime.utcfromtimestamp(ms / 1000).isoformat() + "Z"
+    return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).isoformat().replace("+00:00", "Z")
 
 def load_recent(pattern: str) -> Tuple[List[dict], List[str]]:
     files = iter_files(DATA_DIR, pattern)
@@ -166,7 +166,17 @@ def check_events(event_type: str, rows: List[dict], now_ms: int) -> None:
     if newest and newest - now_ms > MAX_FUTURE_SKEW_SEC * 1000:
         print(f"  WARNING: {event_type} time is in the future")
 
-def check_alignment(snapshots: List[dict], event_map: dict) -> None:
+def pick_event_time(row: dict) -> Optional[int]:
+    if not isinstance(row, dict):
+        return None
+    recv_time = row.get("recvTime")
+    if isinstance(recv_time, (int, float)):
+        return int(recv_time)
+    time_val = row.get("time")
+    return int(time_val) if isinstance(time_val, (int, float)) else None
+
+
+def check_alignment(snapshots: List[dict], event_map: dict, now_ms: int) -> None:
     if not snapshots:
         return
     snaps_by_symbol = defaultdict(list)
@@ -181,16 +191,26 @@ def check_alignment(snapshots: List[dict], event_map: dict) -> None:
         latest_snap = max(snap_times) if snap_times else None
         latest_events = {}
         for ev_type, rows in event_map.items():
-            times = [r.get("time") for r in rows if r.get("time") and r.get("data", {}).get("s") == symbol]
+            times = []
+            for r in rows:
+                if r.get("data", {}).get("s") != symbol:
+                    continue
+                ts = pick_event_time(r)
+                if ts:
+                    times.append(ts)
             latest_events[ev_type] = max(times) if times else None
         lag_parts = []
         for ev_type, ts in latest_events.items():
             if ts and latest_snap:
-                lag_parts.append(f"{ev_type} lag={(latest_snap - ts)/1000.0:.1f}s")
+                # Skip very stale event streams to avoid misleading huge lags.
+                if now_ms - ts > MAX_STALE_SEC * 1000:
+                    lag_parts.append(f"{ev_type} lag=stale")
+                else:
+                    lag_parts.append(f"{ev_type} lag={(latest_snap - ts)/1000.0:.1f}s")
         print(f"  {symbol}: {', '.join(lag_parts) if lag_parts else 'no event data'}")
 
 def main() -> None:
-    now_ms = int(datetime.utcnow().timestamp() * 1000)
+    now_ms = int(datetime.now(tz=timezone.utc).timestamp() * 1000)
     snapshot_rows, _ = load_recent("snapshots_*.jsonl")
     check_snapshots(snapshot_rows, now_ms)
 
@@ -201,7 +221,7 @@ def main() -> None:
         event_map[ev_type] = rows
         check_events(ev_type, rows, now_ms)
 
-    check_alignment(snapshot_rows, event_map)
+    check_alignment(snapshot_rows, event_map, now_ms)
 
 if __name__ == "__main__":
     main()
