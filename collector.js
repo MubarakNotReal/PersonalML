@@ -450,7 +450,12 @@ function handleStreamMessage(msg) {
   const data = msg.data || msg;
   if (!data || !data.e) {
     if (Array.isArray(data)) {
-      handleTickerArray(data);
+      const stream = (msg && msg.stream) || '';
+      if (stream.includes('bookTicker') || (data.length && data[0] && data[0].b !== undefined)) {
+        handleBookTickerArray(data);
+      } else {
+        handleTickerArray(data);
+      }
     }
     return;
   }
@@ -496,6 +501,15 @@ function handleTickerArray(payload) {
       return;
     }
     handleTicker(row);
+  });
+}
+
+function handleBookTickerArray(payload) {
+  payload.forEach((row) => {
+    if (!row || !row.s) {
+      return;
+    }
+    handleBookTicker(row);
   });
 }
 
