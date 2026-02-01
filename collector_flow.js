@@ -1,4 +1,5 @@
 process.env.MODE = 'custom';
+process.env.WRITE_SNAPSHOTS = 'false';
 process.env.ENABLE_DEPTH = 'false';
 process.env.ENABLE_BOOK_TICKER = 'false';
 process.env.ENABLE_AGG_TRADES = 'true';

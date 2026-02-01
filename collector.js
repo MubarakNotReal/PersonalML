@@ -125,6 +125,7 @@ const WRITER_MAX_OPEN_STREAMS = Number(process.env.WRITER_MAX_OPEN_STREAMS || 64
 
 const METRICS_LOG_MS = Number(process.env.METRICS_LOG_MS || 60 * 1000);
 const STALE_THRESHOLD_MS = Number(process.env.STALE_THRESHOLD_MS || 15 * 1000);
+const WRITE_SNAPSHOTS = String(process.env.WRITE_SNAPSHOTS || 'true') === 'true';
 
 const state = {
   symbols: [],
@@ -760,6 +761,9 @@ async function refresh24hStats() {
 }
 
 function snapshotTick() {
+  if (!WRITE_SNAPSHOTS) {
+    return;
+  }
   const now = Date.now();
   const contextFeatures = buildContextFeatures(now);
   for (const symbol of state.symbols) {
