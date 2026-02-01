@@ -229,7 +229,8 @@ async function resolveSymbols() {
   if (!sources.length) {
     return [];
   }
-  return [...new Set(sources.flat().map((value) => String(value || '').toUpperCase()))].filter(
+  const merged = sources.reduce((acc, list) => acc.concat(list), []);
+  return [...new Set(merged.map((value) => String(value || '').toUpperCase()))].filter(
     (symbol) => /^[A-Z0-9]+USDT$/.test(symbol)
   );
 }
