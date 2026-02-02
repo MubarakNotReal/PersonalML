@@ -10,9 +10,32 @@ try:
 except Exception:  # pragma: no cover - optional dependency
     pd = None
 
+try:
+    import pyarrow.parquet as pq  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pq = None
+
 from sklearn.ensemble import HistGradientBoostingRegressor
 from sklearn.metrics import mean_absolute_error, r2_score
 import joblib
+
+
+def iter_batches(path: str, chunk_rows: int):
+    lower = path.lower()
+    if lower.endswith(".csv"):
+        yield from pd.read_csv(path, chunksize=chunk_rows)
+        return
+    if lower.endswith(".jsonl") or lower.endswith(".json"):
+        yield from pd.read_json(path, lines=True, chunksize=chunk_rows)
+        return
+    if lower.endswith(".parquet"):
+        if pq is None:
+            raise SystemExit("pyarrow is required for parquet streaming.")
+        parquet = pq.ParquetFile(path)
+        for batch in parquet.iter_batches(batch_size=chunk_rows):
+            yield batch.to_pandas()
+        return
+    raise SystemExit(f"Unsupported dataset format: {path}")
 
 
 def load_dataset(path: str):
@@ -26,6 +49,37 @@ def load_dataset(path: str):
     if lower.endswith(".jsonl") or lower.endswith(".json"):
         return pd.read_json(path, lines=True)
     raise SystemExit(f"Unsupported dataset format: {path}")
+
+
+def load_dataset_sampled(path: str, sample_frac: float, max_rows: int, random_state: int, chunk_rows: int):
+    if pd is None:
+        raise SystemExit("pandas is required for training. Install requirements.txt first.")
+    if sample_frac >= 1.0 and max_rows <= 0:
+        return load_dataset(path)
+
+    rng = np.random.RandomState(random_state)
+    sampled = []
+    total = 0
+
+    for chunk in iter_batches(path, chunk_rows):
+        if sample_frac < 1.0:
+            chunk = chunk.sample(frac=sample_frac, random_state=rng)
+        if chunk.empty:
+            continue
+        if max_rows > 0:
+            remaining = max_rows - total
+            if remaining <= 0:
+                break
+            if len(chunk) > remaining:
+                chunk = chunk.sample(n=remaining, random_state=rng)
+        sampled.append(chunk)
+        total += len(chunk)
+        if max_rows > 0 and total >= max_rows:
+            break
+
+    if not sampled:
+        raise SystemExit("No rows loaded from dataset.")
+    return pd.concat(sampled, ignore_index=True)
 
 
 BASE_EXCLUDE_COLS = {
@@ -157,9 +211,18 @@ def main() -> None:
     parser.add_argument("--random-state", type=int, default=42)
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--learning-rate", type=float, default=0.05)
+    parser.add_argument("--sample-frac", type=float, default=1.0, help="Sample fraction for large datasets")
+    parser.add_argument("--max-rows", type=int, default=0, help="Max rows to load (0 = no limit)")
+    parser.add_argument("--chunk-rows", type=int, default=200000, help="Chunk size when streaming input")
     args = parser.parse_args()
 
-    df = load_dataset(args.data)
+    df = load_dataset_sampled(
+        args.data,
+        sample_frac=max(0.0, min(float(args.sample_frac), 1.0)),
+        max_rows=max(0, int(args.max_rows)),
+        random_state=int(args.random_state),
+        chunk_rows=max(1000, int(args.chunk_rows)),
+    )
     if args.target_column not in df.columns:
         raise SystemExit(f"Target column not found: {args.target_column}")
 

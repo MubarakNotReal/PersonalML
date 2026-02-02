@@ -2,6 +2,7 @@ import argparse
 import json
 import os
 import glob
+import tempfile
 import bisect
 import math
 
@@ -14,35 +15,82 @@ def safe_float(value):
     return num if math.isfinite(num) else None
 
 
-def load_snapshots(data_dir):
+def iter_snapshot_files(data_dir):
     pattern = os.path.join(data_dir, '**', 'snapshots_*.jsonl')
-    files = sorted(glob.glob(pattern, recursive=True))
-    by_symbol = {}
-    for path in files:
-        with open(path, 'r', encoding='utf-8') as handle:
-            for line in handle:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                if obj.get('type') != 'snapshot':
-                    continue
-                symbol = obj.get('symbol')
-                time = obj.get('time')
-                price = safe_float(obj.get('price'))
-                if symbol is None or time is None or price is None:
-                    continue
-                features = obj.get('features') or {}
-                bid = safe_float(features.get('bestBid'))
-                ask = safe_float(features.get('bestAsk'))
-                funding = safe_float(features.get('fundingRate'))
-                by_symbol.setdefault(symbol, []).append((int(time), price, bid, ask, funding, obj))
-    for symbol, rows in by_symbol.items():
-        rows.sort(key=lambda x: x[0])
-    return by_symbol
+    return sorted(glob.glob(pattern, recursive=True))
+
+
+def stream_snapshots_to_tmp(data_dir, tmp_dir):
+    os.makedirs(tmp_dir, exist_ok=True)
+    file_handles = {}
+    try:
+        for path in iter_snapshot_files(data_dir):
+            with open(path, 'r', encoding='utf-8') as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        obj = json.loads(line)
+                    except Exception:
+                        continue
+                    if obj.get('type') != 'snapshot':
+                        continue
+                    symbol = obj.get('symbol')
+                    time = obj.get('time')
+                    price = safe_float(obj.get('price'))
+                    if symbol is None or time is None or price is None:
+                        continue
+                    features = obj.get('features') or {}
+                    bid = safe_float(features.get('bestBid'))
+                    ask = safe_float(features.get('bestAsk'))
+                    funding = safe_float(features.get('fundingRate'))
+                    out_row = {
+                        "time": int(time),
+                        "price": price,
+                        "bid": bid,
+                        "ask": ask,
+                        "funding": funding,
+                    }
+                    handle_out = file_handles.get(symbol)
+                    if handle_out is None:
+                        handle_out = open(os.path.join(tmp_dir, f"{symbol}.jsonl"), "a", encoding="utf-8")
+                        file_handles[symbol] = handle_out
+                    handle_out.write(json.dumps(out_row) + "\n")
+    finally:
+        for handle_out in file_handles.values():
+            try:
+                handle_out.close()
+            except Exception:
+                pass
+
+
+def load_symbol_rows(path):
+    rows = []
+    with open(path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            time = obj.get("time")
+            price = safe_float(obj.get("price"))
+            if time is None or price is None:
+                continue
+            rows.append(
+                (
+                    int(time),
+                    price,
+                    safe_float(obj.get("bid")),
+                    safe_float(obj.get("ask")),
+                    safe_float(obj.get("funding")),
+                )
+            )
+    rows.sort(key=lambda x: x[0])
+    return rows
 
 
 def pick_price(value, fallback):
@@ -108,6 +156,16 @@ def main():
         action='store_true',
         help='Ignore funding rate adjustments even if fundingRate is present',
     )
+    parser.add_argument(
+        '--tmp-dir',
+        default=None,
+        help='Optional temp directory for streaming snapshots (reduces memory usage)',
+    )
+    parser.add_argument(
+        '--keep-tmp',
+        action='store_true',
+        help='Keep temporary files after labeling (useful for debugging)',
+    )
     args = parser.parse_args()
 
     horizons = [int(h.strip()) for h in args.horizons_min.split(',') if h.strip().isdigit()]
@@ -118,17 +176,23 @@ def main():
     funding_enabled = not args.disable_funding
     eight_hours_ms = 8 * 60 * 60 * 1000
 
-    by_symbol = load_snapshots(args.data_dir)
-    if not by_symbol:
+    tmp_dir = args.tmp_dir or tempfile.mkdtemp(prefix="labeler_tmp_")
+    stream_snapshots_to_tmp(args.data_dir, tmp_dir)
+    symbol_files = sorted(glob.glob(os.path.join(tmp_dir, "*.jsonl")))
+    if not symbol_files:
         raise SystemExit('No snapshots found.')
 
     with open(args.output, 'w', encoding='utf-8') as out:
-        for symbol, rows in by_symbol.items():
+        for path in symbol_files:
+            symbol = os.path.splitext(os.path.basename(path))[0]
+            rows = load_symbol_rows(path)
+            if not rows:
+                continue
             times = [row[0] for row in rows]
             prices = [row[1] for row in rows]
             bids = [row[2] for row in rows]
             asks = [row[3] for row in rows]
-            for idx, (t, price, bid, ask, funding_rate, _) in enumerate(rows):
+            for idx, (t, price, bid, ask, funding_rate) in enumerate(rows):
                 for horizon_ms in horizons_ms:
                     target_time = t + horizon_ms
                     j = bisect.bisect_left(times, target_time)
@@ -196,6 +260,18 @@ def main():
                         'snapshotId': f'snap-{symbol}-{t}',
                     }
                     out.write(json.dumps(payload) + '\n')
+
+    if not args.keep_tmp:
+        for path in symbol_files:
+            try:
+                os.remove(path)
+            except Exception:
+                pass
+        if args.tmp_dir is None:
+            try:
+                os.rmdir(tmp_dir)
+            except Exception:
+                pass
 
     print(f'Wrote labels to {args.output}')
 

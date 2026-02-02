@@ -4,6 +4,8 @@ import glob
 import json
 import os
 import math
+import sqlite3
+import tempfile
 from typing import Dict, Iterable, List, Tuple
 
 
@@ -11,6 +13,13 @@ try:
     import pandas as pd  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
     pd = None
+
+try:
+    import pyarrow as pa  # type: ignore
+    import pyarrow.parquet as pq  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    pa = None
+    pq = None
 
 
 def parse_int_list(text: str) -> List[int]:
@@ -78,6 +87,57 @@ def load_labels(labels_path: str, horizon_ms: int) -> Dict[Tuple[str, int, int],
             key = (symbol, int(entry_time), horizon_ms)
             out[key] = obj
     return out
+
+
+def build_labels_db(labels_path: str, horizon_ms: int, tmp_dir: str) -> sqlite3.Connection:
+    os.makedirs(tmp_dir, exist_ok=True)
+    db_path = os.path.join(tmp_dir, "labels.db")
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=OFF")
+    conn.execute("PRAGMA synchronous=OFF")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS labels (symbol TEXT, entryTime INTEGER, horizonMs INTEGER, payload TEXT, PRIMARY KEY(symbol, entryTime, horizonMs))"
+    )
+    conn.execute("DELETE FROM labels")
+    insert = conn.execute
+    with open(labels_path, "r", encoding="utf-8") as handle:
+        for line in handle:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except Exception:
+                continue
+            if obj.get("type") != "return":
+                continue
+            if int(obj.get("horizonMs") or 0) != horizon_ms:
+                continue
+            symbol = obj.get("symbol")
+            entry_time = obj.get("entryTime")
+            if not symbol or entry_time is None:
+                continue
+            insert(
+                "INSERT OR REPLACE INTO labels(symbol, entryTime, horizonMs, payload) VALUES(?,?,?,?)",
+                (symbol, int(entry_time), horizon_ms, json.dumps(obj)),
+            )
+    conn.commit()
+    return conn
+
+
+def fetch_label(conn: sqlite3.Connection, symbol: str, entry_time: int, horizon_ms: int) -> dict:
+    cur = conn.execute(
+        "SELECT payload FROM labels WHERE symbol=? AND entryTime=? AND horizonMs=?",
+        (symbol, entry_time, horizon_ms),
+    )
+    row = cur.fetchone()
+    if not row:
+        return {}
+    try:
+        return json.loads(row[0])
+    except Exception:
+        return {}
 
 
 def is_finite_num(value) -> bool:
@@ -209,6 +269,59 @@ def write_jsonl(rows: List[dict], path: str) -> None:
             handle.write(json.dumps(row) + "\n")
 
 
+class RowWriter:
+    def __init__(self, path: str, fmt: str):
+        self.path = path
+        self.fmt = fmt
+        self.handle = None
+        self.writer = None
+        self.parquet_writer = None
+        self.columns: List[str] = []
+        self.started = False
+
+    def _ensure_columns(self, rows: List[dict]) -> None:
+        if self.columns:
+            return
+        cols = set()
+        for row in rows:
+            cols.update(row.keys())
+        self.columns = sorted(cols)
+
+    def write_rows(self, rows: List[dict]) -> None:
+        if not rows:
+            return
+        self._ensure_columns(rows)
+        if self.fmt == "jsonl":
+            if self.handle is None:
+                self.handle = open(self.path, "w", encoding="utf-8")
+            for row in rows:
+                self.handle.write(json.dumps(row) + "\n")
+            return
+        if self.fmt == "csv":
+            import csv
+            if self.handle is None:
+                self.handle = open(self.path, "w", encoding="utf-8", newline="")
+                self.writer = csv.DictWriter(self.handle, fieldnames=self.columns)
+                self.writer.writeheader()
+            for row in rows:
+                self.writer.writerow({k: row.get(k) for k in self.columns})
+            return
+        if self.fmt == "parquet":
+            if pa is None or pq is None:
+                raise RuntimeError("pyarrow not available for parquet streaming")
+            table = pa.Table.from_pylist(rows, schema=self.parquet_writer.schema if self.parquet_writer else None)
+            if self.parquet_writer is None:
+                self.parquet_writer = pq.ParquetWriter(self.path, table.schema)
+            self.parquet_writer.write_table(table)
+            return
+
+    def close(self) -> None:
+        if self.parquet_writer is not None:
+            self.parquet_writer.close()
+        if self.handle is not None:
+            self.handle.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build ML-ready datasets from snapshots + labels.")
     parser.add_argument("--snapshots-dir", default="data", help="Directory containing snapshots_*.jsonl")
@@ -226,12 +339,37 @@ def main() -> None:
         default="longReturnPct",
         help="Label field to use as the primary training target",
     )
+    parser.add_argument(
+        "--target-mode",
+        choices=["return", "abs_return", "vol_binary"],
+        default="return",
+        help="Target mode: raw return, absolute return, or binary volatility",
+    )
+    parser.add_argument(
+        "--vol-threshold-bps",
+        type=float,
+        default=20.0,
+        help="Volatility threshold in bps for vol_binary target",
+    )
+    parser.add_argument(
+        "--stream",
+        action="store_true",
+        help="Stream rows to disk to reduce memory usage (recommended for large datasets)",
+    )
+    parser.add_argument("--batch-size", type=int, default=50000)
+    parser.add_argument("--tmp-dir", default=None)
     args = parser.parse_args()
 
     horizon_ms = int(args.horizon_min) * 60 * 1000
-    labels = load_labels(args.labels, horizon_ms)
-    if not labels:
-        raise SystemExit("No labels found for the requested horizon.")
+    labels = None
+    labels_db = None
+    if args.stream:
+        tmp_dir = args.tmp_dir or tempfile.mkdtemp(prefix="build_dataset_")
+        labels_db = build_labels_db(args.labels, horizon_ms, tmp_dir)
+    else:
+        labels = load_labels(args.labels, horizon_ms)
+        if not labels:
+            raise SystemExit("No labels found for the requested horizon.")
 
     context_symbols = parse_symbol_list(args.context_symbols)
     context_windows_min = parse_int_list(args.context_windows_min)
@@ -243,6 +381,9 @@ def main() -> None:
         print("Warning: no context symbol data found; context features will be missing.")
 
     rows: List[dict] = []
+    writer = None
+    if args.stream:
+        writer = RowWriter(args.output, args.format)
     missing_labels = 0
     skipped_micro = 0
 
@@ -256,8 +397,11 @@ def main() -> None:
         except Exception:
             continue
 
-        label_key = (symbol, entry_time, horizon_ms)
-        label = labels.get(label_key)
+        if labels_db is not None:
+            label = fetch_label(labels_db, symbol, entry_time, horizon_ms)
+        else:
+            label_key = (symbol, entry_time, horizon_ms)
+            label = labels.get(label_key) if labels is not None else None
         if not label:
             missing_labels += 1
             continue
@@ -279,11 +423,25 @@ def main() -> None:
         else:
             features["microCompleteness"] = micro_comp
 
+        return_pct = label.get("returnPct")
+        if not is_finite_num(return_pct):
+            return_pct = label.get("midReturnPct")
+        if not is_finite_num(return_pct):
+            continue
+
         target_val = label.get(args.target_field)
         if not is_finite_num(target_val):
-            target_val = label.get("returnPct")
-        if not is_finite_num(target_val):
-            continue
+            target_val = return_pct
+
+        if args.target_mode == "abs_return":
+            if not is_finite_num(return_pct):
+                continue
+            target_val = abs(float(return_pct))
+        elif args.target_mode == "vol_binary":
+            if not is_finite_num(return_pct):
+                continue
+            threshold_pct = float(args.vol_threshold_bps) / 100.0
+            target_val = 1.0 if abs(float(return_pct)) >= threshold_pct else 0.0
 
         row = {
             "symbol": symbol,
@@ -291,14 +449,44 @@ def main() -> None:
             "horizonMs": horizon_ms,
             "target": float(target_val),
             "targetField": args.target_field,
+            "targetMode": args.target_mode,
             "returnPct": label.get("returnPct"),
+            "absReturnPct": abs(float(return_pct)) if is_finite_num(return_pct) else None,
             "midReturnPct": label.get("midReturnPct"),
             "longReturnPct": label.get("longReturnPct"),
             "shortReturnPct": label.get("shortReturnPct"),
             "lagMs": label.get("lagMs"),
         }
         row.update(features)
-        rows.append(row)
+        if args.stream:
+            rows.append(row)
+            if len(rows) >= args.batch_size:
+                try:
+                    writer.write_rows(rows)
+                except RuntimeError:
+                    writer = RowWriter(args.output, "jsonl")
+                    writer.write_rows(rows)
+                    args.format = "jsonl"
+                rows = []
+        else:
+            rows.append(row)
+
+    if args.stream:
+        if rows:
+            try:
+                writer.write_rows(rows)
+            except RuntimeError:
+                writer = RowWriter(args.output, "jsonl")
+                writer.write_rows(rows)
+                args.format = "jsonl"
+        if writer is not None:
+            writer.close()
+        print(
+            f"Built {missing_labels + skipped_micro} skipped | wrote streaming dataset to {args.output} ({args.format})."
+        )
+        if labels_db is not None:
+            labels_db.close()
+        return
 
     print(
         f"Built {len(rows)} rows | missing_labels={missing_labels} | skipped_micro={skipped_micro}"
