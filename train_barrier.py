@@ -28,6 +28,14 @@ EXCLUDE_COLS = {
     "tpBps",
     "slBps",
     "eventType",
+    "returnPct",
+    "midReturnPct",
+    "longReturnPct",
+    "shortReturnPct",
+    "absReturnPct",
+    "lagMs",
+    "targetMode",
+    "targetField",
 }
 
 

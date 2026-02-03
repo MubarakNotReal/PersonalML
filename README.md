@@ -103,6 +103,53 @@ Barrier model:
 python train_barrier.py --data barrier_dataset.parquet --target-column target --model-out barrier_model.joblib --meta-out barrier_meta.json
 ```
 
+## Recommended model (Option A: Volatility / Breakout)
+Directional returns at short horizons are often noise. The most reliable model with this
+collector data is **volatility / breakout prediction** (absolute return or a binary
+volatility threshold).
+
+### Option A: Volatility (binary classifier)
+1) Label returns (streaming, RAM-safe):
+```
+python labeler.py --data-dir data --output returns.jsonl --horizons-min 5,15,30
+```
+2) Build volatility datasets:
+```
+python build_dataset.py --snapshots-dir data --labels returns.jsonl \
+  --output vol_5m_20bps.parquet --horizon-min 5 --mode micro --stream \
+  --min-micro-completeness 0.6 --target-mode vol_binary --vol-threshold-bps 20
+
+python build_dataset.py --snapshots-dir data --labels returns.jsonl \
+  --output vol_15m_20bps.parquet --horizon-min 15 --mode micro --stream \
+  --min-micro-completeness 0.6 --target-mode vol_binary --vol-threshold-bps 20
+
+python build_dataset.py --snapshots-dir data --labels returns.jsonl \
+  --output vol_15m_30bps.parquet --horizon-min 15 --mode micro --stream \
+  --min-micro-completeness 0.6 --target-mode vol_binary --vol-threshold-bps 30
+```
+3) Train classifier:
+```
+python train_barrier.py --data vol_5m_20bps.parquet --target-column target --sample-frac 0.7
+python train_barrier.py --data vol_15m_20bps.parquet --target-column target --sample-frac 0.7
+python train_barrier.py --data vol_15m_30bps.parquet --target-column target --sample-frac 0.7
+```
+
+### Option A (continuous): Absolute return regression
+```
+python build_dataset.py --snapshots-dir data --labels returns.jsonl \
+  --output absret_15m.parquet --horizon-min 15 --mode micro --stream \
+  --min-micro-completeness 0.6 --target-mode abs_return
+
+python train.py --data absret_15m.parquet --sample-frac 0.7
+```
+
+## Training pitfalls to avoid (important)
+- **Leakage**: do not train on any return fields (`returnPct`, `midReturnPct`, `longReturnPct`,
+  `shortReturnPct`, `absReturnPct`, `lagMs`, `targetMode`, `targetField`). The trainer now
+  excludes these automatically, but avoid adding them back as features.
+- **Too-perfect metrics** (e.g., 99%+ accuracy) almost always means leakage. Rebuild and retrain.
+- **Microstructure direction** is very hard; prefer volatility or execution tasks.
+
 ## Notes
 - Logging **depth + trades for hundreds of symbols** is heavy. Increase gradually.
 - If you need historical L2/liquidations, you *must* keep this running to record them.
